@@ -1,0 +1,50 @@
+services:
+
+  # ── Azure token endpoint emulator ─────────────────────────────────────────
+  azure-token-emulator:
+    build:
+      context: ./azure-token-emulator   # directory containing Dockerfile + server.py
+    image: azure-token-emulator:local
+    volumes:
+      # Mount the host user's Azure CLI credentials read-only into the container.
+      # The emulator calls `az account get-access-token` under the hood, so
+      # whatever account is active after `az login` on the host is used.
+      - type: bind
+        source: ${AZURE_CONFIG_DIR:-~/.azure}
+        target: /home/appuser/.azure
+        read_only: true
+    environment:
+      # Must match IDENTITY_HEADER set on the consuming container.
+      IDENTITY_HEADER: ${IDENTITY_HEADER:-local-dev-identity-header}
+      PORT: "8080"
+    ports:
+      # Expose on the host for debugging (optional — remove in CI).
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/msi/token"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Your application container ────────────────────────────────────────────
+  app:
+    image: your-app-image:latest        # ← replace with your image
+    depends_on:
+      azure-token-emulator:
+        condition: service_healthy
+    environment:
+      # ACA-style managed identity variables pointing at the emulator.
+      # azure-identity's ManagedIdentityCredential reads these automatically.
+      IDENTITY_ENDPOINT: http://azure-token-emulator:8080/msi/token
+      IDENTITY_HEADER: ${IDENTITY_HEADER:-local-dev-identity-header}
+
+      # If your app (or the Azure SDK) tries IMDS instead, it needs to reach
+      # the emulator rather than the real 169.254.169.254.  The easiest shim
+      # is to override the IMDS URL via the env var recognised by azure-identity:
+      # (only works with azure-identity >= 1.8)
+      AZURE_POD_IDENTITY_AUTHORITY_HOST: http://azure-token-emulator:8080
+
+      # Optional: set the tenant / subscription so the CLI credential picks the
+      # right account without prompting.
+      # AZURE_TENANT_ID: <your-tenant-id>
+

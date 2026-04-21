@@ -1,0 +1,2 @@
+azure-identity==1.19.0
+azure-core==1.32.0
